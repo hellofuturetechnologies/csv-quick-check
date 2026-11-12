@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="description" content="Inspect CSV rows, blank cells, and duplicates locally in your browser.">
+<title>CSV Quick Check | Hello Future Technologies</title>
+<style>
+:root{color-scheme:light;--navy:#10233f;--ink:#14263b;--muted:#526479;--line:#dce4ee;--blue:#144dcc}
+*{box-sizing:border-box}body{margin:0;background:#f2f6fb;color:var(--ink);font:16px/1.55 "Instrument Sans",system-ui,sans-serif}a{color:var(--blue)}
+header{background:var(--navy);color:#fff;padding:25px max(22px,calc((100vw - 1020px)/2)) 68px}header a{color:#dce9ff;font-weight:650;text-decoration:none}h1{font-size:clamp(2.25rem,6vw,3.9rem);letter-spacing:-.06em;line-height:1.05;margin:28px 0 12px}header p{color:#d2def0;margin:0}
+main{max-width:1068px;margin:-32px auto 0;padding:0 22px 42px;display:grid;gap:18px}section{min-width:0;background:#fff;border:1px solid var(--line);border-radius:16px;padding:23px;box-shadow:0 10px 30px #18325209}
+h2{font-size:1.18rem;margin:0 0 12px}p{margin:0 0 10px}.hint,footer{color:var(--muted);font-size:.9rem}.fields,.actions{display:flex;gap:13px;flex-wrap:wrap;align-items:end}.fields>div:first-child{flex:1;min-width:min(260px,100%)}label{display:block;font-weight:650;margin-bottom:5px}input,select,button{font:inherit;border:1px solid #aebdce;border-radius:8px;background:#fff;color:var(--ink);padding:8px 10px;max-width:100%}input{width:100%}button{font-weight:650;cursor:pointer;background:#f4f8ff;color:#173e91}button.primary{background:var(--blue);color:#fff;border-color:var(--blue)}button:disabled{opacity:.55;cursor:default}.actions{margin-top:15px}a:focus-visible,input:focus-visible,select:focus-visible,button:focus-visible,div[tabindex]:focus-visible{outline:3px solid #5386f0;outline-offset:3px}#status{margin:12px 0 0;min-height:1.5em;color:var(--muted)}#status[data-error=true]{color:#a1272c}
+dl{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;margin:0 0 20px}dl div{border:1px solid var(--line);background:#f7faff;border-radius:10px;padding:10px 13px}dt{font-size:.87rem;color:var(--muted)}dd{margin:0;font-size:1.55rem;font-weight:750} .table-scroll{overflow:auto}table{width:100%;border-collapse:collapse;text-align:left}caption{text-align:left;font-weight:700;margin-bottom:6px}th,td{padding:8px;border-bottom:1px solid var(--line);overflow-wrap:anywhere}th:not(:first-child),td:not(:first-child){text-align:right;white-space:nowrap}details{margin-top:14px}summary{cursor:pointer;font-weight:650}footer{text-align:center;padding:0 20px 24px}@media(max-width:600px){main{padding-inline:12px}section{padding:16px}}
+</style>
+</head>
+<body>
+<header><a href="https://hellofuturetechnology.com/">Hello Future Technologies</a><h1>CSV Quick Check</h1><p>Inspect a CSV for blank cells and exact duplicate rows before analysis.</p></header>
+<main>
+<section aria-labelledby="setup"><h2 id="setup">Choose a CSV</h2>
+<form id="check-form">
+<div class="fields">
+<div><label for="file">CSV file</label><input id="file" type="file" accept=".csv,.tsv,.txt,text/csv,text/plain,text/tab-separated-values" required aria-describedby="file-help"></div>
+<div><label for="delimiter">Separator</label><select id="delimiter"><option value=",">Comma</option><option value=";">Semicolon</option><option value="tab">Tab</option><option value="|">Pipe</option></select></div>
+</div>
+<p id="file-help" class="hint">UTF-8 files up to 10 MiB. The first row must contain column names.</p>
+<div class="actions"><button class="primary" id="check" type="submit">Check file</button><button id="example" type="button">Load example</button></div>
+</form><p id="status" role="status" aria-live="polite"></p>
+</section>
+<section id="results" aria-labelledby="report" hidden><h2 id="report">Results</h2>
+<dl id="totals"></dl>
+<div class="table-scroll" tabindex="0" role="region" aria-label="Missing data by column"><table><caption>Missing data by column</caption><thead><tr><th scope="col">Column</th><th scope="col">Blank cells</th><th scope="col">Blank %</th></tr></thead><tbody id="columns"></tbody></table></div>
+<details id="duplicates" hidden><summary>Duplicate record numbers</summary><p class="hint">Record numbers start at 1 after the header. A quoted multiline record counts as one record.</p><ol id="duplicate-list"></ol><p id="duplicate-note" class="hint"></p></details>
+</section>
+</main><footer>Files are processed in your browser and are never uploaded by this tool.</footer>
+<script>
+'use strict';
+function parseCsv(text, separator) {
+  text = text.replace(/^\uFEFF/, '');
+  const rows = [];
+  let row = [], cell = '', state = 'start', line = 1;
+  const addCell = () => { row.push(cell); cell = ''; state = 'start'; };
+  const addRow = () => { addCell(); rows.push(row); row = []; };
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (state === 'quoted') {
+      if (ch === '"') {
+        if (text[i + 1] === '"') { cell += '"'; i++; }
+        else state = 'closed';
+      } else {
+        cell += ch;
+        if (ch === '\n' || (ch === '\r' && text[i + 1] !== '\n')) line++;
+      }
+    } else if (ch === separator) {
+      addCell();
+    } else if (ch === '\r' || ch === '\n') {
+      addRow();
+      if (ch === '\r' && text[i + 1] === '\n') i++;
+      line++;
+    } else if (ch === '"' && state === 'start') {
+      state = 'quoted';
+    } else if (ch === '"' || state === 'closed') {
+      throw new Error('Unexpected character near physical line ' + line + '. Check the separator and CSV quoting.');
+    } else {
+      cell += ch;
+      state = 'unquoted';
+    }
+  }
+  if (state === 'quoted') throw new Error('The last quoted field is missing its closing quote.');
+  if (row.length || state !== 'start') addRow();
+  return rows;
+}
+
+function inspectCsv(text, separator) {
+  const rows = parseCsv(text, separator);
+  const headers = rows.shift()?.map(header => header.trim()) ?? [];
+  if (!headers.length || headers.some(header => !header) || new Set(headers).size !== headers.length) {
+    throw new Error('Use a header row with unique, nonblank column names.');
+  }
+  const blanks = headers.map(() => 0);
+  const first = new Map();
+  const duplicates = [];
+  let duplicateCount = 0;
+  rows.forEach((row, i) => {
+    const record = i + 1;
+    if (row.length !== headers.length) throw new Error('Record ' + record + ' has ' + row.length + ' fields. Expected ' + headers.length + '.');
+    row.forEach((value, column) => { if (!value.trim()) blanks[column]++; });
+    const key = JSON.stringify(row);
+    if (first.has(key)) {
+      duplicateCount++;
+      if (duplicates.length < 100) duplicates.push([record, first.get(key)]);
+    } else first.set(key, record);
+  });
+  return {headers, records: rows.length, blanks, duplicates, duplicateCount};
+}
+
+const get = id => document.getElementById(id);
+function element(tag, text) {
+  const node = document.createElement(tag);
+  node.textContent = text;
+  return node;
+}
+function show(text, separator) {
+  try {
+    const result = inspectCsv(text, separator);
+    get('totals').replaceChildren();
+    for (const [label, count] of [['Records', result.records], ['Columns', result.headers.length], ['Blank cells', result.blanks.reduce((a,b) => a+b,0)], ['Duplicate records', result.duplicateCount]]) {
+      const card = document.createElement('div');
+      card.append(element('dt', label), element('dd', count.toLocaleString()));
+      get('totals').append(card);
+    }
+    get('columns').replaceChildren();
+    result.headers.forEach((header, i) => {
+      const row = document.createElement('tr');
+      const percent = result.records ? (100 * result.blanks[i] / result.records).toFixed(1) + '%' : '—';
+      row.append(element('td', header), element('td', result.blanks[i].toLocaleString()), element('td', percent));
+      get('columns').append(row);
+    });
+    get('duplicate-list').replaceChildren(...result.duplicates.map(([record, first]) => element('li', 'Record ' + record + ' matches record ' + first + '.')));
+    get('duplicate-note').textContent = result.duplicateCount > 100 ? 'Showing the first 100 matches.' : '';
+    get('duplicates').hidden = result.duplicateCount === 0;
+    get('duplicates').open = false;
+    get('results').hidden = false;
+    setStatus('Check complete.');
+  } catch (error) {
+    get('results').hidden = true;
+    setStatus(error.message, true);
+  }
+}
+function setStatus(message, error = false) {
+  get('status').textContent = message;
+  get('status').dataset.error = error;
+}
+get('check-form').addEventListener('submit', async event => {
+  event.preventDefault();
+  const file = get('file').files[0];
+  if (!file) return;
+  if (file.size > 10 * 1024 * 1024) { get('results').hidden = true; setStatus('Choose a file no larger than 10 MiB.', true); return; }
+  const delimiter = get('delimiter').value;
+  for (const id of ['file', 'delimiter', 'check', 'example']) get(id).disabled = true;
+  get('results').hidden = true;
+  setStatus('Reading file…');
+  try {
+    const text = new TextDecoder('utf-8', {fatal: true}).decode(await file.arrayBuffer());
+    show(text, delimiter === 'tab' ? '\t' : delimiter);
+  } catch {
+    setStatus('Could not read this as UTF-8. Export the file as CSV UTF-8 and try again.', true);
+  } finally {
+    for (const id of ['file', 'delimiter', 'check', 'example']) get(id).disabled = false;
+  }
+});
+get('example').addEventListener('click', () => {
+  get('file').value = '';
+  get('delimiter').value = ',';
+  show('id,city,rating\n001,Lahore,4\n002,,5\n002,,5\n003,Karachi,\n', ',');
+});
+for (const id of ['file', 'delimiter']) get(id).addEventListener('change', () => {
+  get('results').hidden = true;
+  setStatus('');
+});
+</script>
+</body>
+</html>
